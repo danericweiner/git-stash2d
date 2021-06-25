@@ -1,0 +1,262 @@
+#!/bin/sh
+# NAME
+#     git-stash2d -- Stash the changes between two commits to the file system
+#
+# SYNOPSIS
+#     stash2d save <commit> <commit> <directory> [<path>]
+#     stash2d apply <stash>
+#
+# DESCRIPTION
+#     Use stash2d when you want to record the state of a commit and it's
+#     associated baseline commit. The command saves your local modifications to
+#     the file system in a baseline and code directory structure.
+#
+#     The modifications stashed away by this command can be restored
+#     (potentially on top of a different commit) with stash2d apply.
+#
+#     The stash you create is stored in the directory specified.
+#
+# OPTIONS
+#     save <commit> <commit> <directory> [<path>]        
+#         Save the file modifications between two commits to a new stash entry
+#         in the specified directory.  The <path> is optional and will only
+#         consider modifications to files below that path.
+#
+#     apply <stash> [<path>]
+#         Apply a single stash on top of the current working tree state, 
+#         i.e., do the inverse operation of stash2d save. The <path> is optional 
+#         and will apply a stash saved with a <path> argument.
+#
+#         Applying the stash can fail with conflicts; in this case you need to 
+#         resolve the conflicts by hand.
+#
+#         <stash> may be any folder structure that looks like a stash created by 
+#         stash2d save.
+
+# config
+OUTPUT_DIR_NAME="stash2d"
+BASELINE_DIR_NAME="Baseline"
+CODE_DIR_NAME="Code"
+GIT_DIR=".git"     
+
+# choose the command and execute it
+function stash2d {
+    command="$1"
+    case $command in
+        "save") stash2d_save "${@:2}" ;;
+        "apply") stash2d_apply "${@:2}" ;;
+        *) echo "usage: $0 save|apply"; return 1 ;;
+    esac
+}
+
+# apply a stash
+function stash2d_apply {
+    ec=0
+
+    # command arguments
+    if test $# -eq 1; then
+        stash_dir="$1"
+        root_folder=""
+    elif test $# -eq 2; then 
+        stash_dir="$1"
+        root_folder="$2"
+    else
+        echo "usage: $0 apply <stash> [<path>]"; return 1;
+    fi
+
+    # create the temp repo
+    stash2d_apply_make_temp_repo temp_repo "$stash_dir" "$root_folder"
+    if test $? -ne 0; then echo "unable to make_temp_repo"; return 1; fi
+
+    # merge the temp repo
+    stash2d_apply_merge_temp_repo "$temp_repo"
+    if test $? -ne 0; then echo "unable to merge_temp_repo"; ec=1; fi
+
+    # clean up
+    rm -r "$temp_repo"
+    if test $? -ne 0; then echo "unable to clean up temp_repo"; return 1; fi
+
+    return $ec
+}
+
+# merge temp repo to working directory
+function stash2d_apply_merge_temp_repo {
+    # command arguments
+    temp_repo="$1"
+
+    # merge the repo
+    git fetch -q $temp_repo &> /dev/null # suppress the "no common commits" message
+    if test $? -ne 0; then echo "unable to fetch the temporary repo"; return 1; fi    
+
+    git cherry-pick --allow-empty -n FETCH_HEAD > /dev/null       
+    case $? in
+        0) echo "$0: merge success";;
+        1) echo "$0: merge conflicts exist";;
+        *) echo "$0: merge failed with fatal error"; return 1;;
+    esac
+
+    return 0
+}
+
+# create directory with two commits
+# baseline and code
+function stash2d_apply_make_temp_repo {
+    # command arguments
+    if test $# -eq 2; then
+        declare -n out_temp_repo=$1 
+        stash_dir="$2"
+        root_folder=""
+    elif test $# -eq 3; then 
+        declare -n out_temp_repo=$1 
+        stash_dir="$2"
+        root_folder="$3"
+    else
+        echo "usage: stash2d_apply_make_temp_repo <out_temp_repo> <stash_dir> [<root_folder>]"; return 1;
+    fi    
+
+    # directories - quote paths
+    baseline_dir="$stash_dir/$BASELINE_DIR_NAME"
+    code_dir="$stash_dir/$CODE_DIR_NAME"    
+
+    # directories - quote paths
+    temp_repo_1=$(mktemp -d)
+    if test $? -ne 0; then echo "unable to create temp directory"; return 1; fi
+    temp_root_1="$temp_repo_1/$root_folder"
+
+    temp_repo_2=$(mktemp -d)
+    if test $? -ne 0; then echo "unable to create temp directory"; return 1; fi
+    temp_root_2="$temp_repo_2/$root_folder"        
+
+    # create the directories
+    git init -q "$temp_repo_1" &&
+    mkdir -p "$temp_root_1" &&
+    cp -r "$baseline_dir/." "$temp_root_1" &&
+    git -C "$temp_repo_1" add . > /dev/null &&
+    git -C "$temp_repo_1" commit --allow-empty -qm "$BASELINE_DIR_NAME" &&
+    mv "$temp_repo_1/$GIT_DIR" "$temp_repo_2/$GIT_DIR" &&
+    mkdir -p "$temp_root_2" &&
+    cp -r "$code_dir/." "$temp_root_2" &&
+    git -C "$temp_repo_2" add . > /dev/null &&
+    git -C "$temp_repo_2" commit --allow-empty -qm "$CODE_DIR_NAME" &&
+    rm -r "$temp_repo_1"
+    if test $? -ne 0; then echo "unable to create temporary repository"; return 1; fi
+
+    # return the path to the created repository
+    out_temp_repo="$temp_repo_2"
+
+    # success
+    return 0
+}
+
+# save a stash
+function stash2d_save {
+    # command arguments
+    if test $# -eq 3; then
+        baseline_commit="$1"
+        code_commit="$2"
+        stash_dir="$3"
+        root_folder=""
+    elif test $# -eq 4; then 
+        baseline_commit="$1"
+        code_commit="$2"
+        stash_dir="$3"
+        root_folder="$4"
+    else
+        echo "usage: $0 save <commit> <commit> <directory> [<path>]"; return 1;
+    fi
+    
+    # add dated folder to path
+    formatted_datetime=$(date '+%F %H.%M.%S')
+    if test $? -ne 0; then echo "unable to get formatted date time folder"; return 1; fi    
+    stash_dir="$stash_dir"/"$formatted_datetime - $OUTPUT_DIR_NAME"
+
+    # order the commits properly
+    if ! git merge-base --is-ancestor "$baseline_commit" "$code_commit" ; then
+        if ! git merge-base --is-ancestor "$code_commit" "$baseline_commit" ; then echo "the base and code commits must be ancestors"; return 1; fi
+        # swap the order
+        temp="$baseline_commit"
+        baseline_commit="$code_commit"
+        code_commit="$temp"
+    fi   
+
+    # do the copies
+    stash2d_save_output_changed_files "$baseline_commit" "$code_commit" "$stash_dir" "$root_folder"
+    if test $? -ne 0; then echo "unable to output file differences"; return 1; fi    
+
+    # success
+    return 0
+}
+
+# find and copy the differing files
+function stash2d_save_output_changed_files {
+    # command arguments
+    if test $# -eq 3; then
+        baseline_commit="$1"
+        code_commit="$2"
+        stash_dir="$3"
+        root_folder="./"  # default to current directory
+    elif test $# -eq 4; then 
+        baseline_commit="$1"
+        code_commit="$2"
+        stash_dir="$3"
+        root_folder="$4"
+    else
+        echo "usage: stash2d_save_output_changed_files <baseline_commit> <code_commit> <stash_dir> [<root_folder>]"; return 1;
+    fi
+   
+    # deleted, added, changed files
+    diff_filters=( D A CMRT )   
+    
+    # directories - clean
+    baseline_dir="$stash_dir/$BASELINE_DIR_NAME"
+    code_dir="$stash_dir/$CODE_DIR_NAME"
+    root_folder=$(clean_path "$root_folder")
+    if test $? -ne 0; then echo "unable to clean path"; return 1; fi
+
+    # create the subdirectories if they dont exist
+    mkdir -p "$baseline_dir"
+    if test $? -ne 0; then echo "unable to create baseline directory"; return 1; fi
+
+    mkdir -p "$code_dir"
+    if test $? -ne 0; then echo "unable to create code directory"; return 1; fi
+
+    for diff_filter in "${diff_filters[@]}"
+    do        
+        # get the file list        
+        files=$(git diff-tree -r --no-commit-id --name-only --diff-filter="$diff_filter" "$baseline_commit:$root_folder" "$code_commit:$root_folder")
+        if test $? -ne 0; then echo "unable to get git diff-tree file list"; return 1; fi                
+
+        # do the copies
+        while read -r file; do    
+            if test -z "$file"; then continue; fi            
+            
+            if test "$diff_filter" == "D" -o $diff_filter == "CMRT"; then            
+                git archive "$baseline_commit:$root_folder" "$file" | (cd "$baseline_dir" && tar -x) # tar -C option has issues with volumes
+                if test $? -ne 0; then echo "unable to output file difference"; return 1; fi    
+            fi
+            if test "$diff_filter" == "A" -o $diff_filter == "CMRT"; then
+                git archive "$code_commit:$root_folder" "$file" | (cd "$code_dir" && tar -x) # tar -C option has issues with volumes
+                if test $? -ne 0; then echo "unable to output file difference"; return 1; fi    
+            fi           
+        done <<< "$files"
+    done
+
+    # success
+    return 0
+}
+
+# replace backslash with forward slash
+function clean_path {
+    if test $# -eq 1; then
+        path="$1"
+    else
+        echo "usage: replace_backslash <path>"; return 1;
+    fi
+
+    echo "$path" | sed 's_\\_/_g'
+
+    return 0
+}
+
+stash2d "$@"
+exit $?
