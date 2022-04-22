@@ -47,6 +47,8 @@ function stash2d {
         "apply") stash2d_apply "${@:2}" ;;
         *) echo "usage: $0 save|apply"; return 1 ;;
     esac
+
+    echo "done."
 }
 
 # apply a stash
@@ -64,6 +66,8 @@ function stash2d_apply {
         echo "usage: $0 apply <stash> [<path>]"; return 1;
     fi
 
+    echo "applying..."
+
     # create the temp repo
     stash2d_apply_make_temp_repo temp_repo "$stash_dir" "$root_folder"
     if test $? -ne 0; then echo "unable to make_temp_repo"; return 1; fi
@@ -73,7 +77,7 @@ function stash2d_apply {
     if test $? -ne 0; then echo "unable to merge_temp_repo"; ec=1; fi
 
     # clean up
-    rm -r "$temp_repo"
+    rmgit "$temp_repo"
     if test $? -ne 0; then echo "unable to clean up temp_repo"; return 1; fi
 
     return $ec
@@ -131,12 +135,12 @@ function stash2d_apply_make_temp_repo {
     git init -q "$temp_repo_1" &&
     mkdir -p "$temp_root_1" &&
     cp -r "$baseline_dir/." "$temp_root_1" &&
-    git -C "$temp_repo_1" add . > /dev/null &&
+    git -C "$temp_repo_1" add . &> /dev/null &&
     git -C "$temp_repo_1" commit --allow-empty -qm "$BASELINE_DIR_NAME" &&
     mv "$temp_repo_1/$GIT_DIR" "$temp_repo_2/$GIT_DIR" &&
     mkdir -p "$temp_root_2" &&
     cp -r "$code_dir/." "$temp_root_2" &&
-    git -C "$temp_repo_2" add . > /dev/null &&
+    git -C "$temp_repo_2" add . &> /dev/null &&
     git -C "$temp_repo_2" commit --allow-empty -qm "$CODE_DIR_NAME" &&
     rm -r "$temp_repo_1"
     if test $? -ne 0; then echo "unable to create temporary repository"; return 1; fi
@@ -165,6 +169,8 @@ function stash2d_save {
         echo "usage: $0 save <commit> <commit> <directory> [<path>]"; return 1;
     fi
     
+    echo "saving..."
+
     # add dated folder to path
     formatted_datetime=$(date '+%F %H.%M.%S')
     if test $? -ne 0; then echo "unable to get formatted date time folder"; return 1; fi    
@@ -254,6 +260,20 @@ function clean_path {
     fi
 
     echo "$path" | sed 's_\\_/_g'
+
+    return 0
+}
+
+# remove write-protected git repo without force
+function rmgit() {
+    if test $# -eq 1; then
+        path="$1"
+    else
+        echo "usage: rmgit <path>"; return 1;
+    fi
+
+    chmod -R +w "$path/$GIT_DIR" &> /dev/null
+    rm -r "$path"
 
     return 0
 }
